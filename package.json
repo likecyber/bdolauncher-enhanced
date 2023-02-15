@@ -1,0 +1,11 @@
+{
+    "name": "bdolauncher-enhanced",
+    "version": "1.0.0",
+    "main": "app.js",
+    "scripts": {
+        "start": "node app.js"
+    },
+    "dependencies": {
+        "mockttp": "^3.6.3"
+    }
+}
