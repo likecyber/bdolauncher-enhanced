@@ -3,16 +3,47 @@ const hostName = 'localhost';
 
 const fs = require('fs');
 const path = require('path');
-const execFileSync = require('child_process').execFileSync;
+const { execFileSync } = require('child_process');
+const { X509Certificate } = require('crypto');
 
 const mockttp = require('mockttp');
-const { X509Certificate } = require('crypto');
 
 const appDataPath = path.resolve(process.env.APPDATA, appName);
 const certPath = path.resolve(appDataPath, 'cert.pem');
 const keyPath = path.resolve(appDataPath, 'key.pem');
+const pidPath = path.resolve(appDataPath, 'process.pid');
+const startupPath = path.resolve(__dirname, 'startup.vbs');
 
-const script = fs.readFileSync(path.resolve('injectScript.js')).toString().replace('\r', '').split('\n');
+const command = process.argv[2]?.toLowerCase();
+if (command !== undefined && ['install', 'uninstall', 'kill'].includes(command)) {
+    if (command === 'install') {
+        fs.writeFileSync(startupPath, 'CreateObject("Wscript.Shell").Run """" & Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\\") - 1) & "\\Run.cmd""", 0, False');
+        execFileSync('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', appName, '/t', 'REG_SZ', '/d', 'wscript.exe "' + startupPath + '"', '/f']);
+    } else if (command === 'uninstall') {
+        try {
+            process.kill(Number(fs.readFileSync(pidPath).toString()));
+            fs.unlinkSync(pidPath);
+        } catch (e) {
+        }
+        try {
+            fs.unlinkSync(startupPath);
+        } catch (e) {
+        }
+        try {
+            execFileSync('reg', ['delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', appName, '/f'], { stdio: 'ignore' });
+        } catch (e) {
+        }
+    } else if (command === 'kill') {
+        try {
+            process.kill(Number(fs.readFileSync(pidPath).toString()));
+            fs.unlinkSync(pidPath);
+        } catch (e) {
+        }
+    }
+    process.exit();
+}
+
+const script = fs.readFileSync(path.resolve(__dirname, 'injectScript.js')).toString().replace('\r', '').split('\n');
 
 (async () => {
     if (!fs.existsSync(appDataPath)) {
@@ -134,12 +165,25 @@ const script = fs.readFileSync(path.resolve('injectScript.js')).toString().repla
 
     await server.forUnmatchedRequest().thenPassThrough();
 
-    await server.start();
+    await server.start({
+        startPort: 9994,
+        endPort: 65535
+    });
+
+    fs.writeFileSync(pidPath, process.pid.toString());
+    ['exit', 'SIGINT', 'SIGUSR1', 'SIGUSR2', 'uncaughtException', 'SIGTERM'].forEach((event) => {
+        process.on(event, () => {
+            try {
+                fs.unlinkSync(pidPath);
+            } catch (e) {
+            }
+        });
+    });
 
     await server.forGet('http://' + hostName + ':' + server.port).always().thenReply(200, appName + ' Server is running.', {
         'Content-Type': 'text/plain'
     });
-    await server.forGet('http://' + hostName + ':' + server.port + '/autoproxy.pac').always().thenReply(200, fs.readFileSync(path.resolve('autoproxy.pac')).toString().replaceAll('{PROXY}', hostName + ':' + server.port), {
+    await server.forGet('http://' + hostName + ':' + server.port + '/autoproxy.pac').always().thenReply(200, fs.readFileSync(path.resolve(__dirname, 'autoproxy.pac')).toString().replaceAll('{PROXY}', hostName + ':' + server.port), {
         'Content-Type': 'application/x-ns-proxy-autoconfig'
     });
     await server.forAnyRequest().forHost(hostName + ':' + server.port).always().thenReply(404, 'The requested resource is not found.', {
@@ -150,14 +194,12 @@ const script = fs.readFileSync(path.resolve('injectScript.js')).toString().repla
     console.log('http://' + hostName + ':' + server.port);
 
     execFileSync('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings', '/v', 'AutoConfigURL', '/t', 'REG_SZ', '/d', 'http://' + hostName + ':' + server.port + '/autoproxy.pac', '/f']);
-
     ['exit', 'SIGINT', 'SIGUSR1', 'SIGUSR2', 'uncaughtException', 'SIGTERM'].forEach((event) => {
         process.on(event, () => {
             try {
                 execFileSync('reg', ['delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings', '/v', 'AutoConfigURL', '/f'], { stdio: 'ignore' });
             } catch (e) {
             }
-            process.exit();
         });
     });
 })();
